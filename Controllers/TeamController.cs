@@ -18,9 +18,15 @@ namespace API.Controllers
         }
 
         [HttpGet]
-        public async Task<IActionResult> GetAllTeams()
+        public async Task<IActionResult> GetAllTeams([FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 10)
         {
-            var teams = await _context.Team
+            var query = _context.Team.AsQueryable();
+            int totalCount = query.CountAsync().Result;
+            int totalPages = (int)Math.Ceiling((double)totalCount / pageSize);
+            if (pageNumber > totalPages) return NotFound();
+            var teams = await query
+                .Skip((pageNumber - 1) * pageSize)
+                .Take(pageSize)
                 .Select(team => new TeamOutput
                 {
                     Country = team.Country,
@@ -30,7 +36,15 @@ namespace API.Controllers
                     Id = team.Id,
                     LastUpdated = team.LastUpdated
                 }).ToListAsync();
-            return Ok(teams);
+            var response = new PagedResponse<TeamOutput>
+            {
+                PageNumber = pageNumber,
+                PageSize = pageSize,
+                TotalPages = totalPages,
+                TotalCount = totalCount,
+                Content = teams
+            };
+            return Ok(response);
         }
 
         [HttpGet]
@@ -40,13 +54,13 @@ namespace API.Controllers
             TeamLeagueOutput output = await _context.Team.Include(x => x.TeamLeagues).ThenInclude(x => x.League).Select(
                 t => new TeamLeagueOutput
                 {
-                    IdTeam = t.Id,
+                    Id = t.Id,
                     Name = t.Name,
                     Leagues = t.TeamLeagues
                     .Select(tl => tl.League.Name)
                     .ToList()
                 }
-                ).FirstAsync(x => x.IdTeam == id);
+                ).FirstAsync(x => x.Id == id);
             return Ok(output);
         }
 
@@ -79,38 +93,45 @@ namespace API.Controllers
 
         [HttpPost]
         [Route("{id:int}/leagues")]
-        public async Task<IActionResult> AddTeamLeague([FromBody] TeamLeagueInput leagues, int id)
+        public async Task<IActionResult> SyncTeamLeagues([FromBody] TeamLeagueInput leagues, int id)
         {
             Team? team = await _context.Team.Include(x => x.TeamLeagues).FirstOrDefaultAsync(x => x.Id == id);
             if (team == null)
                 return NotFound();
-            var newIds = leagues.LeaguesIds.Except(team.TeamLeagues.Select(x => x.IdLeague)).ToList();
-            if (newIds.Count == 0) return NoContent();
-
-            foreach (int idLeague in newIds)
-            {
-                League? league = await _context.League.FirstOrDefaultAsync(x => x.Id == idLeague);
-                if (league == null) return NotFound($"Id League {idLeague} Not Found");
-                team.TeamLeagues.Add(new TeamLeague
+            var leaguesToRemove = team.TeamLeagues.Where(x => !leagues.LeaguesIds.Contains(x.IdLeague)).ToList();
+            var existingLeaguesIds = team.TeamLeagues.Select(x => x.IdLeague).ToList();
+            var leaguesToAdd = _context.League.Where(x => leagues.LeaguesIds.Contains(x.Id) && !existingLeaguesIds.Contains(x.Id))
+                .Select(l => new TeamLeague
                 {
+                    IdTeam = team.Id,
+                    IdLeague = l.Id,
+                    League = l,
                     Team = team,
-                    League = league,
-                    LastUpdated = DateTime.Now,
-                    Enabled = true
-                });
+                    Enabled = true,
+                    LastUpdated = DateTime.Now
+                }).ToList();
+            if (leaguesToAdd.Count == 0 && leaguesToRemove.Count == 0) return NoContent();
+
+            foreach (var leagueToRemove in leaguesToRemove)
+            {
+                team.TeamLeagues.Remove(leagueToRemove);
+            }
+            foreach (var leagueToAdd in leaguesToAdd)
+            {
+                team.TeamLeagues.Add(leagueToAdd);
             }
 
             await _context.SaveChangesAsync();
             TeamLeagueOutput output = await _context.Team.Include(x => x.TeamLeagues).ThenInclude(x => x.League).Select(
                 t => new TeamLeagueOutput
                 {
-                    IdTeam = t.Id,
+                    Id = t.Id,
                     Name = t.Name,
                     Leagues = t.TeamLeagues
                     .Select(tl => tl.League.Name)
                     .ToList()
                 }
-                ).FirstAsync(x => x.IdTeam == id);
+                ).FirstAsync(x => x.Id == id);
             return Ok(output);
         }
 
@@ -126,6 +147,7 @@ namespace API.Controllers
             team.Name = newTeam.Name;
             team.Country = newTeam.Country;
             team.PlayersQuantity = newTeam.PlayersQuantity;
+            team.Enabled = newTeam.Enabled;
             team.LastUpdated = DateTime.Now;
 
             await _context.SaveChangesAsync();

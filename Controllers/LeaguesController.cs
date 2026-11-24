@@ -18,20 +18,34 @@ namespace API.Controllers
         }
 
         [HttpGet]
-        public async Task<IActionResult> GetAllLeagues()
+        public async Task<IActionResult> GetAllLeagues([FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 10)
         {
-            var leagues = await _context.League
+            var query = _context.League.AsQueryable();
+            int totalCount = query.CountAsync().Result;
+            int totalPages = (int)Math.Ceiling((double)totalCount / pageSize);
+            if (pageNumber > totalPages) return NotFound();
+            var leagues = await query
+                .Skip((pageNumber - 1) * pageSize)
+                .Take(pageSize)
                 .Select(league => new LeagueOutput
                 {
-                    Id = league.Id,
                     Country = league.Country,
                     Name = league.Name,
                     StartDate = league.StartDate,
                     EndDate = league.EndDate,
                     Enabled = league.Enabled,
+                    Id = league.Id,
                     LastUpdated = league.LastUpdated
                 }).ToListAsync();
-            return Ok(leagues);
+            var response = new PagedResponse<LeagueOutput>
+            {
+                PageNumber = pageNumber,
+                PageSize = pageSize,
+                TotalPages = totalPages,
+                TotalCount = totalCount,
+                Content = leagues
+            };
+            return Ok(response);
         }
 
         [HttpGet]
@@ -41,13 +55,13 @@ namespace API.Controllers
             LeagueTeamOutput output = await _context.League.Include(x => x.TeamLeagues).ThenInclude(x => x.Team).Select(
                 l => new LeagueTeamOutput
                 {
-                    IdLeague = l.Id,
+                    Id = l.Id,
                     Name = l.Name,
                     Teams = l.TeamLeagues
                     .Select(tl => tl.Team.Name)
                     .ToList()
                 }
-                ).FirstAsync(x => x.IdLeague == id);
+                ).FirstAsync(x => x.Id == id);
             return Ok(output);
         }
 
@@ -91,6 +105,7 @@ namespace API.Controllers
             league.Country = newLeague.Country;
             league.StartDate = newLeague.StartDate;
             league.EndDate = newLeague.EndDate;
+            league.Enabled = newLeague.Enabled;
             league.LastUpdated = DateTime.Now;
 
             await _context.SaveChangesAsync();
